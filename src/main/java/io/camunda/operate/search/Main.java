@@ -28,6 +28,7 @@ import org.springframework.context.annotation.Bean;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.function.BiConsumer;
 
 import static io.camunda.operate.search.util.ElasticsearchUtil.*;
 import static org.elasticsearch.index.query.QueryBuilders.*;
@@ -81,7 +82,7 @@ public class Main {
             .size(3000));
     Set<Long> nonExistingParents = new HashSet<>();
     scrollWith(request, esClient, sh -> {
-      Set<Long> elementInstanceKeys = collectElementInstanceKeys(sh);
+      Map<Long, Long> elementInstanceKeys = collectElementInstanceKeys(sh);
       try {
         if (!elementInstanceKeys.isEmpty()) {
           nonExistingParents.addAll(searchForNonExistingParents(elementInstanceKeys));
@@ -94,30 +95,34 @@ public class Main {
     System.out.println("Non existing parents: " + nonExistingParents);
   }
 
-  private Set<Long> searchForNonExistingParents(Set<Long> elementInstanceKeys) throws IOException {
-    QueryBuilder query = joinWithAnd(
-        termsQuery("key", elementInstanceKeys));
-    SearchRequest request = new SearchRequest("operate*")
-        .source(new SearchSourceBuilder()
+  private Set<Long> searchForNonExistingParents(Map<Long, Long> elementInstanceKeys) throws IOException {
+    Set<Long> result = new HashSet<>();
+    QueryBuilder query = joinWithAnd(termsQuery("key", elementInstanceKeys.values()));
+    SearchRequest request = new SearchRequest("operate-list-view*")
+        .source(
+        new SearchSourceBuilder()
             .query(query)
-            .fetchSource(new String[]{"key"}, null)
+            .fetchSource(new String[] { "key" }, null)
             .size(1000));
-    List<Long> existingParents = scrollFieldToList(request, "key", esClient);
-    elementInstanceKeys.removeAll(existingParents);
-    return elementInstanceKeys;
+    List<Long> existingFlowNodeInstances = scrollFieldToList(request, "key", esClient);
+    elementInstanceKeys.forEach((processInstanceKey, elementInstanceKey) -> {
+      if (!existingFlowNodeInstances.contains(elementInstanceKey)) {
+        result.add(processInstanceKey);
+      }
+    });
+    return result;
   }
 
-  private Set<Long> collectElementInstanceKeys(SearchHits sh) {
-    Set<Long> result = new HashSet<>();
-    Arrays.stream(sh.getHits()).forEach(
-        hit -> {
-          try {
-            result.add(((Map<String, Long>) hit.getSourceAsMap().get("value")).get("parentElementInstanceKey"));
-          } catch (ClassCastException ex) {
-            int i=1;
-          }
-        }
-    );
+  private Map<Long, Long> collectElementInstanceKeys(SearchHits sh) {
+    Map<Long, Long> result = new HashMap<>();
+    Arrays.stream(sh.getHits()).forEach(hit -> {
+      try {
+        Map<String, Long> value = (Map<String, Long>) hit.getSourceAsMap().get("value");
+        result.put(value.get("processInstanceKey"), value.get("parentElementInstanceKey"));
+      } catch (ClassCastException ex) {
+        int i = 1;
+      }
+    });
     return result;
   }
 
